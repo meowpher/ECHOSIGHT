@@ -62,3 +62,17 @@ export function maxAbs(arr) {
   }
   return m
 }
+
+// Convert device orientation (alpha, beta in degrees) and distance (meters)
+// to Cartesian coordinates (x, y, z) relative to device origin.
+// alpha: compass heading (degrees), beta: front-back tilt (degrees)
+export function sphericalToCartesian(distance, alphaDeg = 0, betaDeg = 0) {
+  const a = (alphaDeg * Math.PI) / 180.0
+  const b = (betaDeg * Math.PI) / 180.0
+
+  const x = distance * Math.sin(a) * Math.cos(b)
+  const y = distance * Math.sin(b)
+  const z = -distance * Math.cos(a) * Math.cos(b)
+
+  return { x, y, z }
+}

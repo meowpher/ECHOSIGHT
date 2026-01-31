@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import SonarEngine from './SonarEngine'
+import Scene from './Scene'
+import { sphericalToCartesian } from './MathUtils'
 
 export default function App() {
   const videoRef = useRef(null)
@@ -13,8 +15,22 @@ export default function App() {
   const [peakCorr, setPeakCorr] = useState(0)
   const [rawDistance, setRawDistance] = useState(null)
   const [scanning, setScanning] = useState(false)
+  const [points, setPoints] = useState([])
+  const [detached, setDetached] = useState(false)
+
+  const alphaRef = useRef(0)
+  const betaRef = useRef(0)
+  const [orientation, setOrientation] = useState({ alpha: 0, beta: 0 })
 
   useEffect(() => {
+    // Device orientation listener for alpha (compass) and beta (tilt)
+    function handleDO(e) {
+      if (typeof e.alpha === 'number') alphaRef.current = e.alpha
+      if (typeof e.beta === 'number') betaRef.current = e.beta
+      setOrientation({ alpha: alphaRef.current, beta: betaRef.current })
+    }
+    window.addEventListener('deviceorientation', handleDO, true)
+
     let mounted = true
 
     console.log('App mounted')
@@ -86,6 +102,7 @@ export default function App() {
     return () => {
       mounted = false
       window.removeEventListener('resize', resize)
+      window.removeEventListener('deviceorientation', handleDO)
       if (rafId) cancelAnimationFrame(rafId)
     }
   }, [distance, confidence, micRMS, peakCorr, rawDistance, status, scanning])
@@ -159,6 +176,23 @@ export default function App() {
         setMicRMS(res.micRMS || 0)
         setPeakCorr(res.peakCorr || 0)
         setRawDistance(res.rawDistance || null)
+
+        // Add a point when we have a valid smoothed distance and decent confidence
+        try {
+          const d = res.smoothed
+          const conf = res.confidence || 0
+          if (d != null && conf > 0.12) {
+            const alpha = alphaRef.current || 0
+            const beta = betaRef.current || 0
+            const p = sphericalToCartesian(d, alpha, beta)
+            setPoints(prev => {
+              const next = prev.length > 1500 ? prev.slice(prev.length - 1499) : prev
+              return [...next, p]
+            })
+          }
+        } catch (e) {
+          console.error('Error adding point:', e)
+        }
       })
     } catch (err) {
       console.error('Error in handleStart:', err)
@@ -242,6 +276,9 @@ export default function App() {
         }}
       />
 
+      {/* 3D overlay */}
+      <Scene points={points} detached={detached} orientation={orientation} />
+
       {/* Control buttons */}
       <div
         style={{
@@ -302,6 +339,22 @@ export default function App() {
           }}
         >
           Test Speaker
+        </button>
+
+        <button
+          onClick={() => setDetached(d => !d)}
+          style={{
+            padding: '12px 16px',
+            backgroundColor: detached ? '#f97316' : '#064e3b',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+          }}
+        >
+          {detached ? 'Attach Camera' : 'Detach Camera'}
         </button>
       </div>
     </div>
