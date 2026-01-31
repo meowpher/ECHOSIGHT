@@ -5,6 +5,7 @@ export default function App() {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const engineRef = useRef(null)
+  
   const [status, setStatus] = useState('idle')
   const [distance, setDistance] = useState(null)
   const [confidence, setConfidence] = useState(0)
@@ -15,8 +16,10 @@ export default function App() {
 
   useEffect(() => {
     let mounted = true
-    
-    // Resize canvas to match window
+
+    console.log('App mounted')
+
+    // Resize canvas
     const resize = () => {
       const c = canvasRef.current
       if (!c) return
@@ -26,20 +29,20 @@ export default function App() {
       const ctx = c.getContext('2d')
       ctx.scale(dpr, dpr)
     }
-    
+
     resize()
     window.addEventListener('resize', resize)
 
-    // Animation loop for debug overlay
+    // Animation loop
     let rafId = null
     function drawLoop() {
       const c = canvasRef.current
       if (!c) return
-      
+
       const ctx = c.getContext('2d')
       const width = window.innerWidth
       const height = window.innerHeight
-      
+
       ctx.clearRect(0, 0, width, height)
 
       // Draw red circle if distance detected
@@ -75,7 +78,7 @@ export default function App() {
       ctx.fillText(`Conf: ${confidence.toFixed(3)}`, 15, 105)
       ctx.fillText(`Status: ${status}`, 15, 120)
       ctx.fillText(`Scanning: ${scanning ? 'YES' : 'NO'}`, 15, 135)
-      
+
       rafId = requestAnimationFrame(drawLoop)
     }
     rafId = requestAnimationFrame(drawLoop)
@@ -84,47 +87,54 @@ export default function App() {
       mounted = false
       window.removeEventListener('resize', resize)
       if (rafId) cancelAnimationFrame(rafId)
-      try { if (engineRef.current) engineRef.current.stop() } catch (e) {}
-      try {
-        const v = videoRef.current
-        if (v && v.srcObject) {
-          const s = v.srcObject
-          if (s.getTracks) s.getTracks().forEach(t => t.stop())
-          v.srcObject = null
-        }
-      } catch (e) {}
     }
   }, [distance, confidence, micRMS, peakCorr, rawDistance, status, scanning])
 
-  async function startScan() {
+  async function handleStart() {
+    console.log('handleStart called')
     if (scanning) return
 
-    setStatus('requesting-permissions')
+    setStatus('requesting-camera')
     setScanning(true)
 
     try {
-      // UNIFIED stream request: ONE call for both audio and video
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Step 1: Request Camera Only
+      console.log('Step 1: Requesting camera...')
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment'
+        },
+        audio: false
+      })
+      console.log('Step 1: Camera granted')
+
+      // Attach to video element
+      const v = videoRef.current
+      if (v) {
+        v.srcObject = cameraStream
+        v.muted = true
+        v.playsInline = true
+        await v.play().catch((e) => console.warn('Video play error:', e))
+        console.log('Step 1: Video element playing')
+      }
+
+      setStatus('requesting-microphone')
+
+      // Step 2: Request Microphone Only
+      console.log('Step 2: Requesting microphone...')
+      const micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
-          autoGainControl: false,
+          autoGainControl: false
         },
-        video: {
-          facingMode: 'environment'
-        }
+        video: false
       })
+      console.log('Step 2: Microphone granted')
 
-      // Attach stream to video element
-      const v = videoRef.current
-      if (v) {
-        v.srcObject = stream
-        v.muted = true
-        v.playsInline = true
-        await v.play().catch((e) => console.warn('Video play error', e))
-      }
-
+      // Initialize engine with mic stream
       setStatus('initializing-sonar')
+      console.log('Step 3: Initializing SonarEngine...')
       const engine = new SonarEngine({
         recMs: 200,
         pulseMs: 40,
@@ -134,12 +144,16 @@ export default function App() {
         smoothingAlpha: 0.15
       })
       engineRef.current = engine
-      await engine.initFromStream(stream)
+
+      // Call init() with microphone stream
+      await engine.init(micStream)
+      console.log('Step 3: SonarEngine initialized')
 
       setStatus('running')
-      // start continuous scan
+      console.log('Starting continuous scan...')
+
+      // Start scanning
       engine.startContinuousScan((res) => {
-        if (!scanning) return
         setConfidence(res.confidence || 0)
         setDistance(res.smoothed == null ? null : res.smoothed)
         setMicRMS(res.micRMS || 0)
@@ -147,21 +161,27 @@ export default function App() {
         setRawDistance(res.rawDistance || null)
       })
     } catch (err) {
-      console.error('Error:', err)
-      setStatus('error')
+      console.error('Error in handleStart:', err)
+      setStatus('error: ' + (err && err.message))
       setScanning(false)
-      alert('Permission denied or device not supported: ' + (err && err.message))
+      alert('Error: ' + (err && err.message))
     }
   }
 
-  async function stopScan() {
+  async function handleStop() {
+    console.log('handleStop called')
     setScanning(false)
     setStatus('stopped')
+
     try {
       if (engineRef.current) {
         engineRef.current.stop()
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error('Error stopping engine:', e)
+    }
+
+    // Stop camera
     try {
       const v = videoRef.current
       if (v && v.srcObject) {
@@ -169,56 +189,117 @@ export default function App() {
         if (s.getTracks) s.getTracks().forEach(t => t.stop())
         v.srcObject = null
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error('Error stopping camera:', e)
+    }
+  }
+
+  async function handleTestBeep() {
+    console.log('handleTestBeep called')
+    try {
+      if (!engineRef.current) {
+        console.error('Engine not initialized yet')
+        alert('Start scan first to initialize the audio engine')
+        return
+      }
+      await engineRef.current.playTestBeep(500, 440)
+    } catch (e) {
+      console.error('Test beep error:', e)
+      alert('Speaker test failed: ' + e.message)
+    }
   }
 
   return (
     <div className="fixed inset-0 bg-black overflow-hidden">
-      {/* Video background - z-index -1 so it's behind everything */}
+      {/* Video background */}
       <video
         ref={videoRef}
-        className="fixed inset-0 w-screen h-screen object-cover"
-        style={{ zIndex: -1 }}
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          objectFit: 'cover',
+          zIndex: -1
+        }}
         autoPlay
         playsInline
         muted
       />
-      
-      {/* Canvas overlay - z-index 10 for UI */}
+
+      {/* Canvas overlay */}
       <canvas
         ref={canvasRef}
-        className="fixed inset-0 w-screen h-screen pointer-events-none"
-        style={{ zIndex: 10 }}
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 10,
+          pointerEvents: 'none'
+        }}
       />
-      
-      {/* Control buttons - z-index 20 to be clickable */}
-      <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 flex gap-3 z-20">
+
+      {/* Control buttons */}
+      <div
+        style={{
+          position: 'fixed',
+          bottom: 24,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          display: 'flex',
+          gap: 12,
+          zIndex: 20
+        }}
+      >
         <button
-          onClick={startScan}
+          onClick={handleStart}
           disabled={scanning}
-          className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded-lg text-white font-semibold shadow-lg"
+          style={{
+            padding: '12px 24px',
+            backgroundColor: scanning ? '#4b5563' : '#16a34a',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: 'bold',
+            cursor: scanning ? 'not-allowed' : 'pointer',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+          }}
         >
           {scanning ? 'Scanning...' : 'Start Scan'}
         </button>
+
         <button
-          onClick={stopScan}
+          onClick={handleStop}
           disabled={!scanning}
-          className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded-lg text-white font-semibold shadow-lg"
+          style={{
+            padding: '12px 24px',
+            backgroundColor: scanning ? '#dc2626' : '#4b5563',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: 'bold',
+            cursor: scanning ? 'pointer' : 'not-allowed',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+          }}
         >
           Stop
         </button>
+
         <button
-          onClick={async () => {
-            try {
-              if (engineRef.current) {
-                await engineRef.current.playTestBeep(500, 440)
-              }
-            } catch (e) {
-              console.error('Test beep error:', e)
-              alert('Speaker test failed: ' + e.message)
-            }
+          onClick={handleTestBeep}
+          style={{
+            padding: '12px 24px',
+            backgroundColor: '#2563eb',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
           }}
-          className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold shadow-lg"
         >
           Test Speaker
         </button>

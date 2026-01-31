@@ -3,8 +3,7 @@ import { generateLinearChirp, normalizedCrossCorrelation, ema, maxAbs } from './
 const SPEED_OF_SOUND = 343.0
 
 export default class SonarEngine {
-  constructor({ sampleRate = 48000, pulseMs = 40, f0 = 15000, f1 = 17000, recMs = 200, blindMs = 2, noiseGate = 0.05, smoothingAlpha = 0.15 } = {}) {
-    this.sampleRate = sampleRate
+  constructor({ pulseMs = 40, f0 = 15000, f1 = 17000, recMs = 200, blindMs = 2, noiseGate = 0.05, smoothingAlpha = 0.15 } = {}) {
     this.pulseMs = pulseMs
     this.f0 = f0
     this.f1 = f1
@@ -13,8 +12,10 @@ export default class SonarEngine {
     this.noiseGate = noiseGate
     this.smoothingAlpha = smoothingAlpha
 
+    // Lazy-loaded (only created in init())
     this.audioCtx = null
-    this.mediaStream = null
+    this.sampleRate = null
+    this.micStream = null
     this.srcNode = null
     this.proc = null
     this.analyser = null
@@ -33,31 +34,51 @@ export default class SonarEngine {
     this.lastRawDistance = null
   }
 
-  async initFromStream(mediaStream) {
-    this.mediaStream = mediaStream
-    if (!this.audioCtx) this.audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-    
-    // Unlock audio context (browsers require user interaction)
+  async init(micStream) {
+    console.log('SonarEngine.init() called')
+    if (!micStream) {
+      console.error('SonarEngine.init() requires a microphone stream')
+      return
+    }
+    this.micStream = micStream
+
+    // Create AudioContext only on first init
+    if (!this.audioCtx) {
+      console.log('Creating new AudioContext')
+      this.audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    }
+
+    // Unlock audio context
     if (this.audioCtx.state === 'suspended') {
+      console.log('AudioContext suspended, resuming...')
       await this.audioCtx.resume()
     }
-    
-    this.sampleRate = this.audioCtx.sampleRate
-    this.template = generateLinearChirp(this.sampleRate, this.pulseMs, this.f0, this.f1)
 
+    this.sampleRate = this.audioCtx.sampleRate
+    console.log('Sample rate:', this.sampleRate)
+
+    // Generate chirp template
+    this.template = generateLinearChirp(this.sampleRate, this.pulseMs, this.f0, this.f1)
+    console.log('Chirp template generated, length:', this.template.length)
+
+    // Prepare ring buffer
     this.ringLen = Math.round(this.sampleRate * Math.max(1, this.recMs / 1000))
     this.ringBuffer = new Float32Array(this.ringLen)
     this.ringWritePtr = 0
+    console.log('Ring buffer initialized, size:', this.ringLen)
 
-    // Create source from media stream
-    this.srcNode = this.audioCtx.createMediaStreamSource(this.mediaStream)
-    
+    // Create media source from microphone stream
+    console.log('Creating MediaStreamSource from mic stream')
+    this.srcNode = this.audioCtx.createMediaStreamSource(this.micStream)
+
     // Create analyser for RMS metering
+    console.log('Creating AnalyserNode')
     this.analyser = this.audioCtx.createAnalyser()
     this.analyser.fftSize = 2048
     this.srcNode.connect(this.analyser)
 
-    // Create recording processor
+    // Create script processor for recording
+    console.log('Creating ScriptProcessor')
     const bufSize = 4096
     this.proc = this.audioCtx.createScriptProcessor(bufSize, 1, 1)
     this.proc.onaudioprocess = (e) => {
@@ -71,33 +92,10 @@ export default class SonarEngine {
         offset += toCopy
       }
     }
+
     this.analyser.connect(this.proc)
     this.proc.connect(this.audioCtx.destination)
-  }
-
-  async playTestBeep(durationMs = 1000, frequency = 440) {
-    // Resume audio context
-    if (this.audioCtx.state === 'suspended') {
-      await this.audioCtx.resume()
-    }
-
-    const now = this.audioCtx.currentTime
-    const duration = durationMs / 1000
-
-    // Create oscillator and gain node
-    const osc = this.audioCtx.createOscillator()
-    const gain = this.audioCtx.createGain()
-
-    osc.type = 'sine'
-    osc.frequency.value = frequency
-    gain.gain.value = 0.3
-
-    // Connect: oscillator -> gain -> speakers
-    osc.connect(gain)
-    gain.connect(this.audioCtx.destination)
-
-    osc.start(now)
-    osc.stop(now + duration)
+    console.log('SonarEngine.init() complete')
   }
 
   getRMS() {
@@ -109,58 +107,89 @@ export default class SonarEngine {
   }
 
   stop() {
+    console.log('SonarEngine.stop() called')
     this.running = false
     try { if (this.proc) this.proc.disconnect() } catch (e) {}
     try { if (this.analyser) this.analyser.disconnect() } catch (e) {}
     try { if (this.srcNode) this.srcNode.disconnect() } catch (e) {}
     try { if (this.audioCtx && this.audioCtx.state !== 'closed') this.audioCtx.close() } catch (e) {}
     this.audioCtx = null
-    this.mediaStream = null
+    this.micStream = null
   }
 
-  async startContinuousScan(onResult) {
-    if (!this.mediaStream) throw new Error('MediaStream not initialized. Call initFromStream(stream) first.')
-    if (!this.template) this.template = generateLinearChirp(this.sampleRate, this.pulseMs, this.f0, this.f1)
-    this.running = true
+  async playTestBeep(durationMs = 1000, frequency = 440) {
+    console.log('playTestBeep called')
+    if (!this.audioCtx) {
+      console.error('AudioContext not initialized. Call init() first.')
+      return
+    }
 
-    const recLen = Math.round(this.sampleRate * (this.recMs / 1000))
-    const intervalMs = Math.max(250, Math.round(this.recMs + 50))
-
-    // Ensure audio context is resumed
     if (this.audioCtx.state === 'suspended') {
+      console.log('AudioContext suspended, resuming for test beep...')
       await this.audioCtx.resume()
     }
 
+    const now = this.audioCtx.currentTime
+    const duration = durationMs / 1000
+
+    const osc = this.audioCtx.createOscillator()
+    const gain = this.audioCtx.createGain()
+
+    osc.type = 'sine'
+    osc.frequency.value = frequency
+    gain.gain.value = 0.3
+
+    osc.connect(gain)
+    gain.connect(this.audioCtx.destination)
+
+    osc.start(now)
+    osc.stop(now + duration)
+    console.log('Test beep playing:', frequency, 'Hz for', durationMs, 'ms')
+  }
+
+  async startContinuousScan(onResult) {
+    console.log('startContinuousScan called')
+    if (!this.audioCtx) {
+      console.error('AudioContext not initialized. Call init() first.')
+      return
+    }
+    if (!this.template) {
+      console.error('Template not generated. Call init() first.')
+      return
+    }
+
+    this.running = true
+    const recLen = Math.round(this.sampleRate * (this.recMs / 1000))
+    const intervalMs = Math.max(250, Math.round(this.recMs + 50))
+
+    console.log('Scan loop started')
+
     while (this.running) {
-      // Get current RMS
       const rms = this.getRMS()
       this.lastMicRMS = rms
 
-      // Play chirp with gain control
+      // Play chirp
       try {
         const buf = this.audioCtx.createBuffer(1, this.template.length, this.sampleRate)
         buf.copyToChannel(this.template, 0)
-        
+
         const src = this.audioCtx.createBufferSource()
         src.buffer = buf
-        
-        // Create gain node for volume control
+
         const gain = this.audioCtx.createGain()
-        gain.gain.value = 1.0 // Max volume
-        
-        // Connect: source -> gain -> destination (speakers)
+        gain.gain.value = 1.0
+
         src.connect(gain)
         gain.connect(this.audioCtx.destination)
-        
+
         src.start()
       } catch (e) {
-        console.warn('Play error', e)
+        console.warn('Play error:', e)
       }
 
-      // Wait for recMs to collect echoes
       await new Promise((res) => setTimeout(res, this.recMs))
 
-      // Snapshot last recLen samples from ring buffer
+      // Snapshot ring buffer
       const snap = new Float32Array(recLen)
       let start = this.ringWritePtr - recLen
       if (start < 0) start += this.ringLen
@@ -172,7 +201,7 @@ export default class SonarEngine {
         snap.set(this.ringBuffer.subarray(0, recLen - firstPart), firstPart)
       }
 
-      // Quick noise gate
+      // Noise gate
       const signalMax = maxAbs(snap)
       if (signalMax < this.noiseGate) {
         this.lastPeakCorr = 0
@@ -202,7 +231,6 @@ export default class SonarEngine {
         if (onResult) onResult({ distance, confidence: corr, smoothed: sm, micRMS: rms, peakCorr: corr, rawDistance: distance })
       }
 
-      // Wait remaining interval
       await new Promise((res) => setTimeout(res, Math.max(0, intervalMs - this.recMs)))
     }
   }
