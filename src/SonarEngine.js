@@ -3,7 +3,7 @@ import { generateLinearChirp, normalizedCrossCorrelation, ema, maxAbs } from './
 const SPEED_OF_SOUND = 343.0
 
 export default class SonarEngine {
-  constructor({ sampleRate = 48000, pulseMs = 20, f0 = 18000, f1 = 22000, recMs = 150, blindMs = 2, noiseGate = 0.1, smoothingAlpha = 0.2 } = {}) {
+  constructor({ sampleRate = 48000, pulseMs = 40, f0 = 15000, f1 = 17000, recMs = 200, blindMs = 2, noiseGate = 0.05, smoothingAlpha = 0.15 } = {}) {
     this.sampleRate = sampleRate
     this.pulseMs = pulseMs
     this.f0 = f0
@@ -25,6 +25,11 @@ export default class SonarEngine {
     this.template = null
     this.running = false
     this.lastSmoothed = null
+    
+    // Debug metrics
+    this.lastMicRMS = 0
+    this.lastPeakCorr = 0
+    this.lastRawDistance = null
   }
 
   async initFromStream(mediaStream) {
@@ -75,7 +80,7 @@ export default class SonarEngine {
     this.running = true
 
     const recLen = Math.round(this.sampleRate * (this.recMs / 1000))
-    const intervalMs = Math.max(200, Math.round(this.recMs + 20)) // aim for ~4-5Hz
+    const intervalMs = Math.max(250, Math.round(this.recMs + 50))
 
     while (this.running) {
       // play chirp
@@ -105,31 +110,44 @@ export default class SonarEngine {
         snap.set(this.ringBuffer.subarray(0, recLen - firstPart), firstPart)
       }
 
+      // Calculate mic RMS
+      let sumSq = 0
+      for (let i = 0; i < snap.length; i++) {
+        sumSq += snap[i] * snap[i]
+      }
+      const rms = Math.sqrt(sumSq / snap.length)
+      this.lastMicRMS = rms
+
       // quick noise gate on recorded signal amplitude
       const signalMax = maxAbs(snap)
       if (signalMax < this.noiseGate) {
         // below noise gate; report null
+        this.lastPeakCorr = 0
+        this.lastRawDistance = null
         const sm = ema(this.lastSmoothed, null, this.smoothingAlpha)
         this.lastSmoothed = sm
-        if (onResult) onResult({ distance: null, confidence: 0, smoothed: sm })
+        if (onResult) onResult({ distance: null, confidence: 0, smoothed: sm, micRMS: rms, peakCorr: 0, rawDistance: null })
         await new Promise((res) => setTimeout(res, intervalMs - this.recMs))
         continue
       }
 
       // cross-correlate
       const { lag, corr } = normalizedCrossCorrelation(this.template, snap, this.blindMs, this.sampleRate)
+      this.lastPeakCorr = corr
 
-      if (lag <= 0 || corr < 0.15) {
+      if (lag <= 0 || corr < 0.1) {
         // weak or invalid
+        this.lastRawDistance = null
         const sm = ema(this.lastSmoothed, null, this.smoothingAlpha)
         this.lastSmoothed = sm
-        if (onResult) onResult({ distance: null, confidence: corr, smoothed: sm })
+        if (onResult) onResult({ distance: null, confidence: corr, smoothed: sm, micRMS: rms, peakCorr: corr, rawDistance: null })
       } else {
         const time = lag / this.sampleRate
         const distance = (time * SPEED_OF_SOUND) / 2
+        this.lastRawDistance = distance
         const sm = ema(this.lastSmoothed, distance, this.smoothingAlpha)
         this.lastSmoothed = sm
-        if (onResult) onResult({ distance, confidence: corr, smoothed: sm })
+        if (onResult) onResult({ distance, confidence: corr, smoothed: sm, micRMS: rms, peakCorr: corr, rawDistance: distance })
       }
 
       // wait remaining interval
