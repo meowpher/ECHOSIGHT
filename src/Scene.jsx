@@ -14,7 +14,7 @@ function CameraOrientation({ orientation = { alpha: 0, beta: 0 }, detached = fal
   return null
 }
 
-function PointsCloud({ points = [] }) {
+function PointsCloud({ points = [], pointSize = 0.06, pointColor = 0x00ff00 }) {
   const ref = useRef()
 
   const positions = useMemo(() => {
@@ -47,19 +47,19 @@ function PointsCloud({ points = [] }) {
       </bufferGeometry>
       <pointsMaterial
         attach="material"
-        color={0x00ff00}
-        size={0.06}
+        color={pointColor}
+        size={pointSize}
         sizeAttenuation={true}
         blending={THREE.AdditiveBlending}
         depthTest={false}
         transparent={true}
-        opacity={0.9}
+        opacity={0.95}
       />
     </points>
   )
 }
 
-export default function Scene({ points = [], detached = false, orientation = { alpha: 0, beta: 0 } }) {
+export default function Scene({ points = [], detached = false, orientation = { alpha: 0, beta: 0 }, pointSize = 0.06, pointColor = 0x00ff00 }) {
   return (
     <Canvas
       style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', pointerEvents: 'none', zIndex: 12 }}
@@ -73,7 +73,7 @@ export default function Scene({ points = [], detached = false, orientation = { a
           <gridHelper args={[10, 10, '#1f2937', '#374151']} />
         </group>
       )}
-      <PointsCloud points={points} />
+      <PointsCloud points={points} pointSize={pointSize} pointColor={pointColor} />
     </Canvas>
   )
 }

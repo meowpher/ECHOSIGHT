@@ -17,6 +17,8 @@ export default function App() {
   const [scanning, setScanning] = useState(false)
   const [points, setPoints] = useState([])
   const [detached, setDetached] = useState(false)
+  const [pointSize, setPointSize] = useState(0.06)
+  const [mode, setMode] = useState('robot') // 'robot' = 6-10kHz, 'high' = 15-17kHz
 
   const alphaRef = useRef(0)
   const betaRef = useRef(0)
@@ -152,14 +154,24 @@ export default function App() {
       // Initialize engine with mic stream
       setStatus('initializing-sonar')
       console.log('Step 3: Initializing SonarEngine...')
-      const engine = new SonarEngine({
+      // Choose engine params depending on mode
+      const engineParams = mode === 'robot' ? {
+        recMs: 200,
+        pulseMs: 10,
+        f0: 6000,
+        f1: 10000,
+        noiseGate: 0.05,
+        smoothingAlpha: 0.15
+      } : {
         recMs: 200,
         pulseMs: 40,
         f0: 15000,
         f1: 17000,
         noiseGate: 0.05,
         smoothingAlpha: 0.15
-      })
+      }
+
+      const engine = new SonarEngine(engineParams)
       engineRef.current = engine
 
       // Call init() with microphone stream
@@ -200,6 +212,18 @@ export default function App() {
       setScanning(false)
       alert('Error: ' + (err && err.message))
     }
+  }
+
+  function clearPoints() {
+    setPoints([])
+  }
+
+  function toggleMode() {
+    if (scanning) {
+      alert('Stop scanning before changing mode')
+      return
+    }
+    setMode(m => (m === 'robot' ? 'high' : 'robot'))
   }
 
   async function handleStop() {
@@ -303,20 +327,25 @@ export default function App() {
       />
 
       {/* 3D overlay */}
-      <Scene points={points} detached={detached} orientation={orientation} />
+      <Scene points={points} detached={detached} orientation={orientation} pointSize={pointSize} />
 
-      {/* Control buttons */}
+      {/* Control panel */}
       <div
         style={{
           position: 'fixed',
-          bottom: 24,
+          bottom: 20,
           left: '50%',
           transform: 'translateX(-50%)',
           display: 'flex',
+          alignItems: 'center',
           gap: 12,
-          zIndex: 20
+          zIndex: 20,
+          background: 'rgba(0,0,0,0.5)',
+          padding: 12,
+          borderRadius: 12
         }}
       >
+        <div style={{ color: 'white', fontWeight: '700', marginRight: 8 }}>{points.length} pts</div>
         <button
           onClick={handleStart}
           disabled={scanning}
@@ -366,39 +395,69 @@ export default function App() {
         >
           Test Speaker
         </button>
-
         <button
           onClick={() => setDetached(d => !d)}
           style={{
-            padding: '12px 16px',
+            padding: '8px 12px',
             backgroundColor: detached ? '#f97316' : '#064e3b',
             color: 'white',
             border: 'none',
             borderRadius: '8px',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+            fontWeight: '700',
+            cursor: 'pointer'
           }}
         >
-          {detached ? 'Attach Camera' : 'Detach Camera'}
+          {detached ? 'Attach' : 'Detach'}
+        </button>
+
+        <button
+          onClick={clearPoints}
+          disabled={!points || points.length === 0}
+          style={{
+            padding: '8px 12px',
+            backgroundColor: points && points.length ? '#b91c1c' : '#374151',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: '700',
+            cursor: points && points.length ? 'pointer' : 'not-allowed'
+          }}
+        >
+          Clear Points
         </button>
 
         <button
           onClick={exportToPLY}
           disabled={!points || points.length === 0}
           style={{
-            padding: '12px 18px',
+            padding: '8px 12px',
             backgroundColor: points && points.length ? '#059669' : '#374151',
             color: 'white',
             border: 'none',
             borderRadius: '8px',
-            fontWeight: 'bold',
-            cursor: points && points.length ? 'pointer' : 'not-allowed',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+            fontWeight: '700',
+            cursor: points && points.length ? 'pointer' : 'not-allowed'
           }}
         >
           💾 Save 3D Model
         </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
+          <label style={{ color: 'white', fontSize: 12 }}>Point Size</label>
+          <input
+            type="range"
+            min="0.01"
+            max="0.25"
+            step="0.01"
+            value={pointSize}
+            onChange={(e) => setPointSize(parseFloat(e.target.value))}
+          />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={{ color: 'white', fontSize: 12 }}>Mode</label>
+          <button onClick={toggleMode} style={{ padding: '6px 10px', borderRadius: 8, border: 'none', background: '#111827', color: 'white' }}>{mode === 'robot' ? 'Robot' : 'High'}</button>
+        </div>
       </div>
     </div>
   )
