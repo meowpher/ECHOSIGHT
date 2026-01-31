@@ -243,6 +243,32 @@ export default function App() {
     }
   }
 
+  function exportToPLY() {
+    try {
+      if (!points || points.length === 0) {
+        alert('No points to export')
+        return
+      }
+
+      const header = `ply\nformat ascii 1.0\nelement vertex ${points.length}\nproperty float x\nproperty float y\nproperty float z\nend_header\n`
+      const body = points.map(p => `${p.x} ${p.y} ${p.z}`).join('\n')
+      const content = header + body
+
+      const blob = new Blob([content], { type: 'text/plain' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'room-scan.ply'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('Export PLY error:', e)
+      alert('Export failed: ' + (e && e.message))
+    }
+  }
+
   return (
     <div className="fixed inset-0 bg-black overflow-hidden">
       {/* Video background */}
@@ -355,6 +381,23 @@ export default function App() {
           }}
         >
           {detached ? 'Attach Camera' : 'Detach Camera'}
+        </button>
+
+        <button
+          onClick={exportToPLY}
+          disabled={!points || points.length === 0}
+          style={{
+            padding: '12px 18px',
+            backgroundColor: points && points.length ? '#059669' : '#374151',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: 'bold',
+            cursor: points && points.length ? 'pointer' : 'not-allowed',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+          }}
+        >
+          💾 Save 3D Model
         </button>
       </div>
     </div>
