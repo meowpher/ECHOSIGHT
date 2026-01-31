@@ -3,7 +3,7 @@ import { generateLinearChirp, normalizedCrossCorrelation, ema, maxAbs } from './
 const SPEED_OF_SOUND = 343.0
 
 export default class SonarEngine {
-  constructor({ pulseMs = 40, f0 = 15000, f1 = 17000, recMs = 200, blindMs = 2, noiseGate = 0.05, smoothingAlpha = 0.15 } = {}) {
+  constructor({ pulseMs = 10, f0 = 6000, f1 = 10000, recMs = 200, blindMs = 2, noiseGate = 0.05, smoothingAlpha = 0.15 } = {}) {
     this.pulseMs = pulseMs
     this.f0 = f0
     this.f1 = f1
@@ -79,7 +79,7 @@ export default class SonarEngine {
 
     // Create script processor for recording
     console.log('Creating ScriptProcessor')
-    const bufSize = 4096
+    const bufSize = 4096 // explicit buffer size (samples)
     this.proc = this.audioCtx.createScriptProcessor(bufSize, 1, 1)
     this.proc.onaudioprocess = (e) => {
       const inCh = e.inputBuffer.getChannelData(0)
@@ -213,22 +213,56 @@ export default class SonarEngine {
         continue
       }
 
-      // Cross-correlate
-      const { lag, corr } = normalizedCrossCorrelation(this.template, snap, this.blindMs, this.sampleRate)
-      this.lastPeakCorr = corr
+      // Cross-correlate (inline) and apply time-gating to remove direct crosstalk
+      const template = this.template
+      const m = template.length
+      const n = snap.length
+      let bestLag = -1
+      let bestCorr = -Infinity
 
-      if (lag <= 0 || corr < 0.1) {
+      // Precompute template norm
+      let tNorm = 0
+      for (let i = 0; i < m; i++) tNorm += template[i] * template[i]
+      tNorm = Math.sqrt(Math.max(1e-12, tNorm))
+
+      const outLen = n - m + 1
+      const gateSamples = 150 // time-gating: zero first 150 correlation samples to remove direct speaker crosstalk
+
+      for (let lag = 0; lag < outLen; lag++) {
+        // Apply blind region and gate region
+        if (lag < gateSamples) continue
+        let dot = 0
+        let sNorm = 0
+        for (let j = 0; j < m; j++) {
+          const s = snap[lag + j]
+          dot += template[j] * s
+          sNorm += s * s
+        }
+        sNorm = Math.sqrt(Math.max(1e-12, sNorm))
+        const corr = dot / (tNorm * sNorm)
+        if (corr > bestCorr) {
+          bestCorr = corr
+          bestLag = lag
+        }
+      }
+
+      // Peak-thresholding: require a reasonably strong echo
+      const maxPeakValue = bestCorr
+      this.lastPeakCorr = maxPeakValue
+
+      if (bestLag <= 0 || maxPeakValue < 0.2) {
+        // Treat as no valid echo
         this.lastRawDistance = null
         const sm = ema(this.lastSmoothed, null, this.smoothingAlpha)
         this.lastSmoothed = sm
-        if (onResult) onResult({ distance: null, confidence: corr, smoothed: sm, micRMS: rms, peakCorr: corr, rawDistance: null })
+        if (onResult) onResult({ distance: null, confidence: maxPeakValue || 0, smoothed: sm, micRMS: rms, peakCorr: maxPeakValue || 0, rawDistance: null })
       } else {
-        const time = lag / this.sampleRate
+        const time = bestLag / this.sampleRate
         const distance = (time * SPEED_OF_SOUND) / 2
         this.lastRawDistance = distance
         const sm = ema(this.lastSmoothed, distance, this.smoothingAlpha)
         this.lastSmoothed = sm
-        if (onResult) onResult({ distance, confidence: corr, smoothed: sm, micRMS: rms, peakCorr: corr, rawDistance: distance })
+        if (onResult) onResult({ distance, confidence: maxPeakValue, smoothed: sm, micRMS: rms, peakCorr: maxPeakValue, rawDistance: distance })
       }
 
       await new Promise((res) => setTimeout(res, Math.max(0, intervalMs - this.recMs)))
