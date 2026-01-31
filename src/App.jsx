@@ -207,6 +207,21 @@ export default function App() {
         >
           Stop
         </button>
+        <button
+          onClick={async () => {
+            try {
+              if (engineRef.current) {
+                await engineRef.current.playTestBeep(500, 440)
+              }
+            } catch (e) {
+              console.error('Test beep error:', e)
+              alert('Speaker test failed: ' + e.message)
+            }
+          }}
+          className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold shadow-lg"
+        >
+          Test Speaker
+        </button>
       </div>
     </div>
   )

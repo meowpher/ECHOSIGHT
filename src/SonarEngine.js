@@ -36,6 +36,12 @@ export default class SonarEngine {
   async initFromStream(mediaStream) {
     this.mediaStream = mediaStream
     if (!this.audioCtx) this.audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    
+    // Unlock audio context (browsers require user interaction)
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume()
+    }
+    
     this.sampleRate = this.audioCtx.sampleRate
     this.template = generateLinearChirp(this.sampleRate, this.pulseMs, this.f0, this.f1)
 
@@ -69,6 +75,31 @@ export default class SonarEngine {
     this.proc.connect(this.audioCtx.destination)
   }
 
+  async playTestBeep(durationMs = 1000, frequency = 440) {
+    // Resume audio context
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume()
+    }
+
+    const now = this.audioCtx.currentTime
+    const duration = durationMs / 1000
+
+    // Create oscillator and gain node
+    const osc = this.audioCtx.createOscillator()
+    const gain = this.audioCtx.createGain()
+
+    osc.type = 'sine'
+    osc.frequency.value = frequency
+    gain.gain.value = 0.3
+
+    // Connect: oscillator -> gain -> speakers
+    osc.connect(gain)
+    gain.connect(this.audioCtx.destination)
+
+    osc.start(now)
+    osc.stop(now + duration)
+  }
+
   getRMS() {
     if (!this.analyser) return 0
     const dataArray = new Uint8Array(this.analyser.frequencyBinCount)
@@ -95,18 +126,32 @@ export default class SonarEngine {
     const recLen = Math.round(this.sampleRate * (this.recMs / 1000))
     const intervalMs = Math.max(250, Math.round(this.recMs + 50))
 
+    // Ensure audio context is resumed
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume()
+    }
+
     while (this.running) {
       // Get current RMS
       const rms = this.getRMS()
       this.lastMicRMS = rms
 
-      // Play chirp
+      // Play chirp with gain control
       try {
         const buf = this.audioCtx.createBuffer(1, this.template.length, this.sampleRate)
         buf.copyToChannel(this.template, 0)
+        
         const src = this.audioCtx.createBufferSource()
         src.buffer = buf
-        src.connect(this.audioCtx.destination)
+        
+        // Create gain node for volume control
+        const gain = this.audioCtx.createGain()
+        gain.gain.value = 1.0 // Max volume
+        
+        // Connect: source -> gain -> destination (speakers)
+        src.connect(gain)
+        gain.connect(this.audioCtx.destination)
+        
         src.start()
       } catch (e) {
         console.warn('Play error', e)
