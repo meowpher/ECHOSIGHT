@@ -17,6 +17,7 @@ export default class SonarEngine {
     this.mediaStream = null
     this.srcNode = null
     this.proc = null
+    this.analyser = null
 
     this.ringBuffer = null
     this.ringWritePtr = 0
@@ -35,18 +36,22 @@ export default class SonarEngine {
   async initFromStream(mediaStream) {
     this.mediaStream = mediaStream
     if (!this.audioCtx) this.audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-    // use actual sample rate
     this.sampleRate = this.audioCtx.sampleRate
-    // prepare template
     this.template = generateLinearChirp(this.sampleRate, this.pulseMs, this.f0, this.f1)
 
-    // prepare ring buffer to hold recMs samples
     this.ringLen = Math.round(this.sampleRate * Math.max(1, this.recMs / 1000))
     this.ringBuffer = new Float32Array(this.ringLen)
     this.ringWritePtr = 0
 
-    // create source and processor
+    // Create source from media stream
     this.srcNode = this.audioCtx.createMediaStreamSource(this.mediaStream)
+    
+    // Create analyser for RMS metering
+    this.analyser = this.audioCtx.createAnalyser()
+    this.analyser.fftSize = 2048
+    this.srcNode.connect(this.analyser)
+
+    // Create recording processor
     const bufSize = 4096
     this.proc = this.audioCtx.createScriptProcessor(bufSize, 1, 1)
     this.proc.onaudioprocess = (e) => {
@@ -60,14 +65,22 @@ export default class SonarEngine {
         offset += toCopy
       }
     }
-    this.srcNode.connect(this.proc)
-    // do not connect processor to destination to avoid feedback
+    this.analyser.connect(this.proc)
     this.proc.connect(this.audioCtx.destination)
+  }
+
+  getRMS() {
+    if (!this.analyser) return 0
+    const dataArray = new Uint8Array(this.analyser.frequencyBinCount)
+    this.analyser.getByteFrequencyData(dataArray)
+    const average = dataArray.reduce((a, b) => a + b) / dataArray.length
+    return average / 255
   }
 
   stop() {
     this.running = false
     try { if (this.proc) this.proc.disconnect() } catch (e) {}
+    try { if (this.analyser) this.analyser.disconnect() } catch (e) {}
     try { if (this.srcNode) this.srcNode.disconnect() } catch (e) {}
     try { if (this.audioCtx && this.audioCtx.state !== 'closed') this.audioCtx.close() } catch (e) {}
     this.audioCtx = null
@@ -83,7 +96,11 @@ export default class SonarEngine {
     const intervalMs = Math.max(250, Math.round(this.recMs + 50))
 
     while (this.running) {
-      // play chirp
+      // Get current RMS
+      const rms = this.getRMS()
+      this.lastMicRMS = rms
+
+      // Play chirp
       try {
         const buf = this.audioCtx.createBuffer(1, this.template.length, this.sampleRate)
         buf.copyToChannel(this.template, 0)
@@ -95,10 +112,10 @@ export default class SonarEngine {
         console.warn('Play error', e)
       }
 
-      // wait for recMs to collect echoes
+      // Wait for recMs to collect echoes
       await new Promise((res) => setTimeout(res, this.recMs))
 
-      // snapshot last recLen samples from ring buffer
+      // Snapshot last recLen samples from ring buffer
       const snap = new Float32Array(recLen)
       let start = this.ringWritePtr - recLen
       if (start < 0) start += this.ringLen
@@ -110,18 +127,9 @@ export default class SonarEngine {
         snap.set(this.ringBuffer.subarray(0, recLen - firstPart), firstPart)
       }
 
-      // Calculate mic RMS
-      let sumSq = 0
-      for (let i = 0; i < snap.length; i++) {
-        sumSq += snap[i] * snap[i]
-      }
-      const rms = Math.sqrt(sumSq / snap.length)
-      this.lastMicRMS = rms
-
-      // quick noise gate on recorded signal amplitude
+      // Quick noise gate
       const signalMax = maxAbs(snap)
       if (signalMax < this.noiseGate) {
-        // below noise gate; report null
         this.lastPeakCorr = 0
         this.lastRawDistance = null
         const sm = ema(this.lastSmoothed, null, this.smoothingAlpha)
@@ -131,12 +139,11 @@ export default class SonarEngine {
         continue
       }
 
-      // cross-correlate
+      // Cross-correlate
       const { lag, corr } = normalizedCrossCorrelation(this.template, snap, this.blindMs, this.sampleRate)
       this.lastPeakCorr = corr
 
       if (lag <= 0 || corr < 0.1) {
-        // weak or invalid
         this.lastRawDistance = null
         const sm = ema(this.lastSmoothed, null, this.smoothingAlpha)
         this.lastSmoothed = sm
@@ -150,7 +157,7 @@ export default class SonarEngine {
         if (onResult) onResult({ distance, confidence: corr, smoothed: sm, micRMS: rms, peakCorr: corr, rawDistance: distance })
       }
 
-      // wait remaining interval
+      // Wait remaining interval
       await new Promise((res) => setTimeout(res, Math.max(0, intervalMs - this.recMs)))
     }
   }

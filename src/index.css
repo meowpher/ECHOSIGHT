@@ -4,6 +4,24 @@
 
 html, body, #root {
   height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
-canvas { display: block; }
+body {
+  background-color: transparent;
+}
+
+canvas { 
+  display: block; 
+  margin: 0;
+  padding: 0;
+}
+
+video {
+  display: block;
+  margin: 0;
+  padding: 0;
+}
